@@ -1,0 +1,5 @@
+.sqlx/
+
+.env
+
+/target/
