@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use chrono::{DateTime, Utc};
 
 pub enum WeaponClass {}
@@ -9,7 +11,7 @@ pub struct Gun {
     class: WeaponClass,
     caliber: String,
     date_of_purchase: DateTime<Utc>,
-    foto_url: Option<String>,
+    photo_url: Option<String>,
 }
 
 impl Gun {
@@ -20,7 +22,7 @@ impl Gun {
         class: WeaponClass,
         caliber: String,
         date_of_purchase: DateTime<Utc>,
-        foto_url: Option<String>,
+        photo_url: Option<String>,
     ) -> Self {
         Self {
             manufacturer,
@@ -29,7 +31,7 @@ impl Gun {
             class,
             caliber,
             date_of_purchase,
-            foto_url,
+            photo_url,
         }
     }
 }
