@@ -14,6 +14,12 @@ pub fn now_utc_plus_sec_str(sec: i64) -> String {
     format_time(t)
 }
 
+pub fn parse_utc(time: &str) -> anyhow::Result<DateTime<Utc>> {
+    let t = DateTime::parse_from_rfc3339(time)?;
+
+    Ok(t.to_utc())
+}
+
 
 pub enum TimeError {
     ParsingError

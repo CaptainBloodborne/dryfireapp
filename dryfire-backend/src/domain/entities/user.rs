@@ -13,6 +13,13 @@ pub enum Language {
     EN,
 }
 
+pub enum UserStatus {
+    Pending,
+    Verified,
+    Blocked,
+
+}
+
 impl From<&str> for Language {
     fn from(value: &str) -> Self {
         match value {
@@ -31,6 +38,7 @@ pub struct User {
     surname: String,
     email: String,
     date_of_birth: NaiveDate,
+    status: UserStatus,
     language: Language,
 }
 
@@ -54,6 +62,7 @@ impl User {
             email,
             date_of_birth,
             language,
+            status: UserStatus::Pending,
         }
     }
 
@@ -78,5 +87,9 @@ impl User {
 
         return age >= Self::DEFAULT_MINIMUM_AGE;
 
+    }
+
+    fn check_if_user_verified(&self) -> bool {
+        matches!(self.status, UserStatus::Pending)
     }
 }

@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{fmt::Display, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 
-use crate::{domain::services::crypto::Hasher, utils::time::utc_now};
+use crate::{domain::services::crypto::Hasher, utils::{b64::{b64_decode, b64_encode}, time::utc_now}};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PasswordValidationError {
@@ -38,6 +38,38 @@ pub struct Token {
     pub ident: String,
     pub exp: String,
     pub sign_b64u: String,
+}
+
+impl Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}.{}.{}",
+            b64_encode(&self.ident),
+            b64_encode(&self.exp),
+            &self.sign_b64u,
+        )
+    }
+}
+
+impl FromStr for Token {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self, Self::Err> {
+        let splits = s.split(".").collect::<Vec<&str>>();
+
+        if splits.len() != 3 {
+            return Err(anyhow::anyhow!("Token is invalid"));
+        }
+
+        let (ident, exp, sign_b64u) = (splits[0], splits[1], splits[2]);
+
+        Ok(Self {
+            ident: b64_decode(ident)?,
+            exp: b64_decode(exp)?,
+            sign_b64u: sign_b64u.to_string(),
+        })
+    }
 }
 
 pub struct Credentials {

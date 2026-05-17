@@ -1,3 +1,7 @@
+pub mod errors;
+pub mod middleware;
+pub mod user;
+
 use async_trait::async_trait;
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get, serve};
 
