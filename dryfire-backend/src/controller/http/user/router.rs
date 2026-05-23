@@ -23,7 +23,7 @@ use crate::{
         },
     },
     controller::http::{
-        errors::{ApiError, ApiResult},
+        errors::ApiResult,
         middleware::auth::{AuthSession, AuthUser, require_auth},
         user::payload::*,
     },
