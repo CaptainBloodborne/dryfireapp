@@ -8,8 +8,6 @@ use dryfire_backend::infra;
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
 
-    println!("->> hello");
-
     infra::init_app().await?;
 
     Ok(())

@@ -1,0 +1,90 @@
+//! Bearer-token authentication middleware.
+//!
+//! Pipeline per request:
+//! 1. Pull `Authorization: Bearer <token>` (or the `session` cookie).
+//! 2. Parse it into a [`Token`].
+//! 3. Validate signature + expiry via [`TokenHandler`].
+//! 4. The token's `ident` is a session UUID — look up the session row,
+//!    refuse if revoked or expired in DB.
+//! 5. Load the user, refuse if blocked.
+//! 6. Inject `AuthUser` into request extensions; the handler downstream
+//!    pulls it with `Extension<AuthUser>`.
+//!
+//! Any failure produces a `401` with a coded error body.
+
+use std::str::FromStr;
+
+use axum::{
+    extract::State,
+    http::{HeaderMap, Request, header::AUTHORIZATION},
+    middleware::Next,
+    response::Response,
+};
+use uuid::Uuid;
+
+use crate::{
+    application::app_state::AppState,
+    controller::http::errors::ApiError,
+    domain::{entities::user::User, services::identity::Token},
+};
+
+/// Marker type. Handlers extract it
+/// to access the authenticated user without re-parsing the token.
+#[derive(Clone, Debug)]
+pub struct AuthUser(pub User);
+
+#[derive(Clone, Debug)]
+pub struct AuthSession {
+    pub session_id: Uuid,
+}
+
+fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
+    let v = headers.get(AUTHORIZATION)?.to_str().ok()?;
+    v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer "))
+}
+
+pub async fn require_auth(
+    State(state): State<AppState>,
+    mut req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let raw = extract_bearer(req.headers())
+        .ok_or_else(|| ApiError::unauthorized("AUTH_MISSING", "missing bearer token"))?;
+
+    let token = Token::from_str(raw)
+        .map_err(|_| ApiError::unauthorized("AUTH_INVALID_TOKEN", "token malformed"))?;
+    state
+        .token_handler
+        .validate_token(&token)
+        .await
+        .map_err(|_| ApiError::unauthorized("AUTH_INVALID_TOKEN", "token invalid or expired"))?;
+
+    let session_id = Uuid::parse_str(&token.ident)
+        .map_err(|_| ApiError::unauthorized("AUTH_INVALID_TOKEN", "token subject is not a session id"))?;
+    let session = state
+        .session_repo
+        .find_active(session_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::unauthorized("AUTH_SESSION_REVOKED", "session not found or revoked"))?;
+
+    let user = state
+        .user_repo
+        .find_by_id(session.user_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::unauthorized("USER_NOT_FOUND", "user no longer exists"))?;
+    if user.is_blocked() {
+        return Err(ApiError::unauthorized("USER_BLOCKED", "user is blocked"));
+    }
+
+    let _ = state
+        .user_repo
+        .touch_last_visit(user.id(), chrono::Utc::now())
+        .await;
+
+    req.extensions_mut().insert(AuthUser(user));
+    req.extensions_mut().insert(AuthSession { session_id });
+
+    Ok(next.run(req).await)
+}

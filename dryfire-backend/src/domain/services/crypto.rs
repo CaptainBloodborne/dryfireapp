@@ -1,19 +1,17 @@
 use async_trait::async_trait;
 
-// type CryptoResult<T, E=CryptoError> = Result<T, E>;
-
 #[async_trait]
 pub trait Hasher: Send + Sync {
     async fn hash(&self, content: String) -> anyhow::Result<String>;
     async fn validate(&self, content: String, hash: String) -> anyhow::Result<()>;
 }
 
-// #[derive(Debug, thiserror::Error)]
-// pub enum CryptoError{
-//     #[error("Can not match encrypted data: {0}")]
-//     ValidationFailed(String),
+pub trait Signer: Send + Sync {
+    /// HMAC-SHA256 of `content` with the server's secret key,
+    /// returned as raw bytes.
+    fn sign(&self, content: &str) -> Vec<u8>;
 
-//     #[error("Can not encrypt data: {0}")]
-//     HashingFailed(String),
-
-// }
+    /// Verify the bytes (`provided`) against a fresh signature of
+    /// `content`. Constant-time comparison.
+    fn verify(&self, content: &str, provided: &[u8]) -> bool;
+}

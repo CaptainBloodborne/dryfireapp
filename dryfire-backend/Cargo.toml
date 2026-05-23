@@ -10,20 +10,25 @@ async-trait = "0.1.89"
 axum = "0.8"
 axum-macros = { version = "0.5.1", optional = true}
 base64-url = "3.0.3"
-chrono = "0.4.44"
+chrono = { version = "0.4.44", features = ["serde"] }
 config = { version = "0.15.22", features = ["json", "toml", "yaml"] }
 dotenvy = "0.15.7"
 envy = "0.4.2"
+hmac = "0.13.0"
 rand = "0.10.1"
 regex = "1.12.3"
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "uuid"] }
+sha2 = "0.11.0"
+sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "uuid", "chrono", "macros", "migrate", "ipnetwork"] }
+subtle = "2.6.1"
 thiserror = "2.0.18"
 tokio = { version = "1.52.2", features = ["full"] }
 tower = "0.5.3"
 tower-cookies = "0.11.0"
+tower-http = { version = "0.6", features = ["trace", "cors", "timeout", "limit", "request-id", "util"] }
+tracing = "0.1.44"
 uuid = { version = "1.23.1", features = ["v4", "fast-rng", "serde"] }
 
 [dev-dependencies]
