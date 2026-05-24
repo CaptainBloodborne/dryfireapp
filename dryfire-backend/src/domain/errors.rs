@@ -51,6 +51,42 @@ pub enum DomainError {
     #[error("user is blocked")]
     Blocked,
 
+    // armory
+    #[error("gun not found")]
+    GunNotFound,
+    #[error("gun with this serial already exists")]
+    GunSerialAlreadyExists,
+    #[error("ammo lot not found")]
+    AmmoLotNotFound,
+    #[error("not enough ammo on hand (have {have}, need {need})")]
+    AmmoInsufficient { have: i64, need: i64 },
+
+    // license
+    #[error("license not found")]
+    LicenseNotFound,
+    #[error("license already expired")]
+    LicenseExpired,
+
+    // ballistics
+    #[error("ballistic profile not found")]
+    BallisticProfileNotFound,
+    #[error("invalid ballistic input: {0}")]
+    BallisticInput(String),
+
+    // scope
+    #[error("scope profile not found")]
+    ScopeProfileNotFound,
+    #[error("requested adjustment exceeds scope range")]
+    ScopeRangeExceeded,
+
+    // law
+    #[error("law not found")]
+    LawNotFound,
+
+    // generic ownership
+    #[error("forbidden: resource not owned by current user")]
+    NotOwner,
+
     // auth
     #[error("invalid credentials")]
     InvalidCredentials,

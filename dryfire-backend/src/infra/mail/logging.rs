@@ -35,4 +35,14 @@ impl Mailer for LoggingMailer {
         );
         Ok(())
     }
+
+    async fn send_notification(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+    ) -> anyhow::Result<()> {
+        tracing::info!(target: "mail", %to, %subject, %body, "notification email");
+        Ok(())
+    }
 }

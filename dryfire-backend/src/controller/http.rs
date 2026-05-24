@@ -5,8 +5,13 @@
 //! - Tracing, request ID, CORS, timeout, body-limit middleware
 //! - Graceful shutdown on SIGTERM / Ctrl-C
 
+pub mod armory;
+pub mod ballistics;
 pub mod errors;
+pub mod law;
+pub mod license;
 pub mod middleware;
+pub mod scope;
 pub mod user;
 
 use std::sync::Arc;
@@ -79,7 +84,14 @@ pub fn build_router(state: AppState) -> Router {
         .merge(user::router::public_routes())
         .merge(user::router::protected_routes(state.clone()));
 
-    let v1 = Router::new().nest("/users", v1_users);
+    let v1 = Router::new()
+        .nest("/users", v1_users)
+        .nest("/guns", armory::router::gun_routes(state.clone()))
+        .nest("/ammo", armory::router::ammo_routes(state.clone()))
+        .nest("/licenses", license::router::routes(state.clone()))
+        .nest("/ballistics", ballistics::router::routes(state.clone()))
+        .nest("/scopes", scope::router::routes(state.clone()))
+        .nest("/laws", law::router::routes(state.clone()));
 
     Router::new()
         .route("/health", get(healthcheck))

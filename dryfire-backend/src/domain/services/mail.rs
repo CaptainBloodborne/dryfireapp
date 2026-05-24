@@ -15,4 +15,12 @@ pub trait Mailer: Send + Sync {
         to: &str,
         reset_url: &str,
     ) -> anyhow::Result<()>;
+
+    /// Free-form transactional notification (license-expiry warnings, etc.).
+    async fn send_notification(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+    ) -> anyhow::Result<()>;
 }
