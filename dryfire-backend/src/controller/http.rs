@@ -5,6 +5,7 @@
 //! - Tracing, request ID, CORS, timeout, body-limit middleware
 //! - Graceful shutdown on SIGTERM / Ctrl-C
 
+pub mod ammo;
 pub mod armory;
 pub mod ballistics;
 pub mod errors;
@@ -86,12 +87,11 @@ pub fn build_router(state: AppState) -> Router {
 
     let v1 = Router::new()
         .nest("/users", v1_users)
-        .nest("/guns", armory::router::gun_routes(state.clone()))
-        .nest("/ammo", armory::router::ammo_routes(state.clone()))
-        .nest("/licenses", license::router::routes(state.clone()))
+        .nest("/ammo", ammo::router::routes(state.clone()))
+        .nest("/armory", armory::router::routes(state.clone()))
         .nest("/ballistics", ballistics::router::routes(state.clone()))
-        .nest("/scopes", scope::router::routes(state.clone()))
-        .nest("/laws", law::router::routes(state.clone()));
+        .nest("/licenses", license::router::routes(state.clone()))
+        .nest("/scope", scope::router::routes(state.clone()));
 
     Router::new()
         .route("/health", get(healthcheck))

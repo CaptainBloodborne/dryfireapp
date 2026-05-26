@@ -18,7 +18,7 @@ impl Mailer for LoggingMailer {
         tracing::info!(
             target = to,
             url = verification_url,
-            "→ would send verification email"
+            "- would send verification email"
         );
         Ok(())
     }
@@ -31,7 +31,7 @@ impl Mailer for LoggingMailer {
         tracing::info!(
             target = to,
             url = reset_url,
-            "→ would send password reset email"
+            "- would send password reset email"
         );
         Ok(())
     }

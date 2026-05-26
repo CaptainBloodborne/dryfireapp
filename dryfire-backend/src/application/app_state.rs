@@ -5,19 +5,20 @@ use sqlx::PgPool;
 use crate::{
     domain::{
         repositories::{
-            user::{SessionRepository, UserRepository, VerificationRepository},
-            armory::{AmmoRepository, GunRepository},
+            ammo::AmmoRepository,
+            armory::{GunCatalogRepository, GunRepository},
             ballistics::BallisticProfileRepository,
             law::LawRepository,
-            license::LicenseRepository,
+            license::{LicenseNotificationRepository, LicenseRepository},
             scope::ScopeProfileRepository,
+            user::{SessionRepository, UserRepository, VerificationRepository},
         },
         services::{
-            ballistics::BallisticCalculator,
+            audit::AuditLogger,
+            cipher::FieldCipher,
             crypto::{Hasher, Signer},
             identity::TokenHandler,
             mail::Mailer,
-            scope::ScopeAdjuster,
         },
     },
     infra::config::Config,
@@ -30,29 +31,33 @@ pub struct AppState {
 
     pub hasher: Arc<dyn Hasher>,
     pub signer: Arc<dyn Signer>,
+    pub cipher: Arc<dyn FieldCipher>,
     pub token_handler: Arc<dyn TokenHandler>,
     pub mailer: Arc<dyn Mailer>,
+    pub audit: Arc<dyn AuditLogger>,
 
     // user
     pub user_repo: Arc<dyn UserRepository>,
     pub session_repo: Arc<dyn SessionRepository>,
     pub verification_repo: Arc<dyn VerificationRepository>,
 
-    // armory
+    // armory domain
     pub gun_repo: Arc<dyn GunRepository>,
+    pub gun_catalog_repo: Arc<dyn GunCatalogRepository>,
+
+    // ammo domain
     pub ammo_repo: Arc<dyn AmmoRepository>,
 
-    // license
+    // licenses domain
     pub license_repo: Arc<dyn LicenseRepository>,
+    pub license_notification_repo: Arc<dyn LicenseNotificationRepository>,
 
     // ballistics
     pub ballistic_profile_repo: Arc<dyn BallisticProfileRepository>,
-    pub ballistic_calculator: Arc<dyn BallisticCalculator>,
 
     // scope
     pub scope_profile_repo: Arc<dyn ScopeProfileRepository>,
-    pub scope_adjuster: Arc<dyn ScopeAdjuster>,
 
-    // law
+    // laws domain
     pub law_repo: Arc<dyn LawRepository>,
 }

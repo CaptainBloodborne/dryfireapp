@@ -3,6 +3,7 @@
 //! Conversion failure (e.g. an unknown enum value coming from a hand-
 //! edited DB row) is mapped to `DomainError::Infra`.
 
+
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -22,7 +23,8 @@ pub struct UserRow {
     pub date_of_birth: NaiveDate,
     pub region: String,
     pub language: String,
-    pub status: String,
+    pub status: String, // we read the user_status enum as text
+    pub is_admin: bool,
     pub last_visit_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -51,6 +53,7 @@ impl UserRow {
             region,
             language,
             status,
+            self.is_admin,
             self.last_visit_at,
             self.created_at,
             self.updated_at,

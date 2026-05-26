@@ -1,128 +1,135 @@
-// src/controller/http/armory/payload.rs
-
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::domain::entities::armory::{CatalogEntry, Gun, WeaponClass};
+
+// ---------------- Gun DTOs ---------------- //
+
 #[derive(Debug, Deserialize)]
 pub struct CreateGunRequest {
+    pub catalog_id: Option<Uuid>,
     pub manufacturer: String,
     pub model: String,
-    pub serial: String,
-    pub class: String,
+    pub class: WeaponClass,
     pub caliber: String,
-    pub date_of_purchase: DateTime<Utc>,
+    pub serial: SecretString,
+    pub date_of_purchase: NaiveDate,
     pub photo_url: Option<String>,
     pub notes: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct UpdateGunRequest {
+    /// `Some(None)` clears; `Some(Some(...))` sets; missing leaves alone.
+    #[serde(default)] pub catalog_id: Option<Option<Uuid>>,
+    #[serde(default)] pub manufacturer: Option<String>,
+    #[serde(default)] pub model: Option<String>,
+    #[serde(default)] pub class: Option<WeaponClass>,
+    #[serde(default)] pub caliber: Option<String>,
+    #[serde(default)] pub serial: Option<SecretString>,
+    #[serde(default)] pub date_of_purchase: Option<NaiveDate>,
+    #[serde(default)] pub photo_url: Option<Option<String>>,
+    #[serde(default)] pub notes: Option<Option<String>>,
+}
+
+/// Default Gun response. The serial number is **never** included; only
+/// the last-4 hint is. Use the dedicated /serial endpoint to reveal it.
 #[derive(Debug, Serialize)]
 pub struct GunResponse {
     pub id: Uuid,
+    pub user_id: Uuid,
+    pub catalog_id: Option<Uuid>,
     pub manufacturer: String,
     pub model: String,
-    pub serial_last4: String,
     pub class: String,
     pub caliber: String,
-    pub date_of_purchase: DateTime<Utc>,
+    pub serial_last4: String,
+    pub date_of_purchase: NaiveDate,
     pub photo_url: Option<String>,
     pub notes: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
-impl From<&crate::domain::entities::armory::Gun> for GunResponse {
-    fn from(g: &crate::domain::entities::armory::Gun) -> Self {
-        let serial = g.serial();
-        let last4 = if serial.len() >= 4 {
-            format!("***{}", &serial[serial.len() - 4..])
-        } else { "***".into() };
+impl From<&Gun> for GunResponse {
+    fn from(g: &Gun) -> Self {
         Self {
             id: g.id(),
-            manufacturer: g.manufacturer().into(),
-            model: g.model().into(),
-            serial_last4: last4,
-            class: g.class().as_str().into(),
-            caliber: g.caliber().as_str().into(),
+            user_id: g.user_id(),
+            catalog_id: g.catalog_id(),
+            manufacturer: g.manufacturer().to_string(),
+            model: g.model().to_string(),
+            class: g.class().as_str().to_string(),
+            caliber: g.caliber().to_string(),
+            serial_last4: g.serial_last4(),
             date_of_purchase: g.date_of_purchase(),
             photo_url: g.photo_url().map(str::to_string),
             notes: g.notes().map(str::to_string),
             created_at: g.created_at(),
+            updated_at: g.updated_at(),
         }
     }
+}
+
+/// Explicit response when the user wants to see the full serial.
+#[derive(Debug, Serialize)]
+pub struct GunSerialResponse {
+    pub id: Uuid,
+    pub serial: String,
+}
+
+impl GunSerialResponse {
+    pub fn from_gun(g: &Gun) -> Self {
+        Self { id: g.id(), serial: g.serial().expose_secret().to_string() }
+    }
+}
+
+// ---------------- List query params ---------------- //
+
+#[derive(Debug, Deserialize)]
+pub struct GunListQuery {
+    pub class: Option<WeaponClass>,
+    pub caliber: Option<String>,
+    pub q: Option<String>,
+}
+
+// ---------------- Catalog DTOs ---------------- //
+
+#[derive(Debug, Deserialize)]
+pub struct CreateCatalogRequest {
+    pub manufacturer: String,
+    pub model: String,
+    pub class: WeaponClass,
+    pub caliber: String,
+    pub barrel_length_mm: Option<i32>,
+    pub weight_g: Option<i32>,
+    pub capacity: Option<i32>,
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
-pub struct PageRequest {
-    #[serde(default = "default_page")]   pub page: u32,
-    #[serde(default = "default_size")]   pub size: u32,
-    pub sort: Option<String>,
-    pub q:    Option<String>,
-}
-fn default_page() -> u32 { 1 }
-fn default_size() -> u32 { 20 }
-
-impl From<PageRequest> for crate::domain::repositories::armory::PageQuery {
-    fn from(p: PageRequest) -> Self {
-        Self { page: p.page, size: p.size, sort: p.sort, filter_text: p.q }
-    }
+pub struct UpdateCatalogRequest {
+    #[serde(default)] pub manufacturer: Option<String>,
+    #[serde(default)] pub model: Option<String>,
+    #[serde(default)] pub class: Option<WeaponClass>,
+    #[serde(default)] pub caliber: Option<String>,
+    #[serde(default)] pub barrel_length_mm: Option<Option<i32>>,
+    #[serde(default)] pub weight_g: Option<Option<i32>>,
+    #[serde(default)] pub capacity: Option<Option<i32>>,
+    #[serde(default)] pub notes: Option<Option<String>>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct Page<T> {
-    pub items: Vec<T>,
-    pub total: i64,
-    pub page: u32,
-    pub size: u32,
-}
-
-// --- ammo --- //
-#[derive(Debug, Deserialize)]
-pub struct CreateAmmoLotRequest {
-    pub manufacturer: String,
-    pub caliber: String,
-    pub bullet_type: String,
-    pub shell_type: String,
-    pub bullet_weight_grains: Option<f64>,
-    pub powder_charge_grains: Option<f64>,
-    pub initial_quantity: i64,
-    pub notes: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AmmoLotResponse {
-    pub id: Uuid,
-    pub manufacturer: String,
-    pub caliber: String,
-    pub bullet_type: String,
-    pub shell_type: String,
-    pub quantity_on_hand: i64,
-    pub bullet_weight_grains: Option<f64>,
-    pub powder_charge_grains: Option<f64>,
-    pub notes: Option<String>,
-}
-
-impl From<&crate::domain::entities::armory::AmmoLot> for AmmoLotResponse {
-    fn from(l: &crate::domain::entities::armory::AmmoLot) -> Self {
-        Self {
-            id: l.id,
-            manufacturer: l.manufacturer.clone(),
-            caliber: l.caliber.as_str().into(),
-            bullet_type: l.bullet_type.as_str().into(),
-            shell_type: l.shell_type.as_str().into(),
-            quantity_on_hand: l.quantity_on_hand,
-            bullet_weight_grains: l.bullet_weight_grains,
-            powder_charge_grains: l.powder_charge_grains,
-            notes: l.notes.clone(),
-        }
-    }
+pub struct CatalogResponse {
+    #[serde(flatten)]
+    pub entry: CatalogEntry,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RecordTxnRequest {
-    pub lot_id: Uuid,
-    pub gun_id: Option<Uuid>,
-    pub kind: String,                 // "purchase" | "use" | "adjust" | "loss"
-    pub quantity: i64,                // positive
-    pub happened_at: Option<DateTime<Utc>>,
-    pub notes: Option<String>,
+pub struct CatalogListQuery {
+    pub class: Option<WeaponClass>,
+    pub caliber: Option<String>,
+    pub q: Option<String>,
 }

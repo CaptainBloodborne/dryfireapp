@@ -1,4 +1,11 @@
-// src/controller/http/license/router.rs
+//! License HTTP routes.
+//!
+//! Three subtrees mounted at `/api/v1/licenses`:
+//!
+//! 1. `*/licenses/*` — user CRUD on own licenses + deadlines query.
+//! 2. `/types`, `/types/{id}` — read-only browse of the type catalog
+//!    (auth required so we know who's reading).
+//! 3. `/admin/types/*` — admin CRUD on the type catalog.
 
 use axum::{
     Extension, Json, Router,
@@ -7,125 +14,213 @@ use axum::{
     middleware,
     routing::{get, post},
 };
+use chrono::Utc;
 use uuid::Uuid;
 
 use crate::{
     application::{
         app_state::AppState,
         license_use_cases::{
-            CreateLicenseInput, CreateLicenseUseCase, DeadlinesUseCase,
-            DeleteLicenseUseCase, GetLicenseUseCase, ListLicensesUseCase,
+            CreateLicenseTypeInput, CreateLicenseTypeUseCase,
+            DeadlinesInRangeUseCase, DeleteLicenseTypeUseCase,
+            DeleteLicenseUseCase, GetLicenseTypeUseCase, GetLicenseUseCase,
+            ListLicenseTypesUseCase, ListLicensesUseCase,
+            RegisterLicenseInput, RegisterLicenseUseCase,
+            UpdateLicenseInput, UpdateLicenseTypeInput,
+            UpdateLicenseTypeUseCase, UpdateLicenseUseCase,
         },
     },
     controller::http::{
-        armory::payload::{Page, PageRequest},
-        errors::{ApiError, ApiResult},
+        errors::ApiResult,
         license::payload::*,
-        middleware::auth::{AuthUser, require_auth},
+        middleware::auth::{AuthUser, require_admin, require_auth},
     },
+    domain::repositories::license::LicenseFilter,
+    utils::paging::{Page, PageQuery},
 };
 
 pub fn routes(state: AppState) -> Router<AppState> {
+    let user_subtree = Router::new()
+        .route("/licenses", get(list_licenses).post(create_license))
+        .route("/licenses/deadlines", get(get_deadlines))
+        .route(
+            "/licenses/{id}",
+            get(get_license).patch(update_license).delete(delete_license),
+        )
+        .route("/types", get(list_types))
+        .route("/types/{id}", get(get_type))
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let admin_subtree = Router::new()
+        .route("/types", post(create_type))
+        .route(
+            "/types/{id}",
+            axum::routing::patch(update_type).delete(delete_type),
+        )
+        .layer(middleware::from_fn_with_state(state, require_admin));
+
     Router::new()
-        .route("/", post(create).get(list))
-        .route("/deadlines", get(deadlines))
-        .route("/{id}", get(get_one).delete(delete_one))
-        .route("/{id}/guns", post(link_gun))
-        .layer(middleware::from_fn_with_state(state, require_auth))
+        .merge(user_subtree)
+        .nest("/admin", admin_subtree)
 }
 
-async fn create(
+// ============== licenses ============== //
+
+async fn create_license(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Json(req): Json<CreateLicenseRequest>,
-) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
-    let id = CreateLicenseUseCase::new(&state)
-        .execute(CreateLicenseInput {
-            owner_id: auth.0.id(),
-            kind: req.kind,
-            issuing_org: req.issuing_org,
+) -> ApiResult<(StatusCode, Json<LicenseResponse>)> {
+    let l = RegisterLicenseUseCase { state: &state }
+        .execute(RegisterLicenseInput {
+            user_id: auth.0.id(),
+            license_type_id: req.license_type_id,
+            license_number: req.license_number,
+            issuer: req.issuer,
             issued_at: req.issued_at,
             expires_at: req.expires_at,
-            document_url: req.document_url,
-            instructions: req.instructions,
-            linked_gun_ids: req.linked_gun_ids,
-        })
-        .await?;
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
+            notes: req.notes,
+            scan_url: req.scan_url,
+            gun_ids: req.gun_ids,
+        }).await?;
+    let today = Utc::now().date_naive();
+    Ok((StatusCode::CREATED, Json(LicenseResponse::from_license(&l, today))))
 }
 
-async fn list(
+async fn list_licenses(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Query(p): Query<PageRequest>,
+    Query(page): Query<PageQuery>,
+    Query(f): Query<LicenseListQuery>,
 ) -> ApiResult<Json<Page<LicenseResponse>>> {
-    let page = p.page;
-    let size = p.size;
-    let (items, total) = ListLicensesUseCase::new(&state)
-        .execute(auth.0.id(), p.into())
-        .await?;
-    Ok(Json(Page {
-        items: items.iter().map(LicenseResponse::from).collect(),
-        total,
-        page,
-        size,
-    }))
+    let p = page.normalized();
+    let today = Utc::now().date_naive();
+    let filter = LicenseFilter {
+        gun_id: f.gun_id, type_id: f.type_id, expired: f.expired, q: f.q,
+    };
+    let (items, total) = ListLicensesUseCase { state: &state }
+        .execute(auth.0.id(), &filter, today, p.limit(), p.offset()).await?;
+    let resp: Vec<LicenseResponse> = items.iter()
+        .map(|l| LicenseResponse::from_license(l, today))
+        .collect();
+    Ok(Json(Page::new(resp, total, &p)))
 }
 
-async fn get_one(
+async fn get_license(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<LicenseResponse>> {
-    let lic = GetLicenseUseCase::new(&state)
-        .execute(id, auth.0.id())
-        .await?;
-    Ok(Json(LicenseResponse::from(&lic)))
+    let l = GetLicenseUseCase { state: &state }.execute(auth.0.id(), id).await?;
+    Ok(Json(LicenseResponse::from_license(&l, Utc::now().date_naive())))
 }
 
-async fn delete_one(
+async fn update_license(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateLicenseRequest>,
+) -> ApiResult<Json<LicenseResponse>> {
+    let l = UpdateLicenseUseCase { state: &state }
+        .execute(auth.0.id(), id, UpdateLicenseInput {
+            license_type_id: req.license_type_id,
+            license_number: req.license_number,
+            issuer: req.issuer,
+            issued_at: req.issued_at,
+            expires_at: req.expires_at,
+            notes: req.notes,
+            scan_url: req.scan_url,
+            gun_ids: req.gun_ids,
+        }).await?;
+    Ok(Json(LicenseResponse::from_license(&l, Utc::now().date_naive())))
+}
+
+async fn delete_license(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    DeleteLicenseUseCase::new(&state)
-        .execute(id, auth.0.id())
-        .await?;
+    DeleteLicenseUseCase { state: &state }.execute(auth.0.id(), id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn deadlines(
+async fn get_deadlines(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
     Query(q): Query<DeadlinesQuery>,
-) -> ApiResult<Json<Vec<LicenseResponse>>> {
-    if q.to < q.from {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "VALIDATION_RANGE",
-            "to < from",
-        ));
-    }
-    let items = DeadlinesUseCase::new(&state)
-        .execute(auth.0.id(), q.from, q.to)
-        .await?;
-    Ok(Json(items.iter().map(LicenseResponse::from).collect()))
+) -> ApiResult<Json<Vec<DeadlineResponse>>> {
+    let items = DeadlinesInRangeUseCase { state: &state }
+        .execute(auth.0.id(), q.from, q.to).await?;
+    Ok(Json(items.into_iter().map(|d| DeadlineResponse {
+        license_id: d.license_id,
+        license_number: d.license_number,
+        issuer: d.issuer,
+        expires_at: d.expires_at,
+    }).collect()))
 }
 
-async fn link_gun(
+// ============== license types ============== //
+
+async fn list_types(
+    State(state): State<AppState>,
+    Extension(_auth): Extension<AuthUser>,
+    Query(page): Query<PageQuery>,
+    Query(q): Query<LicenseTypeListQuery>,
+) -> ApiResult<Json<Page<LicenseTypeResponse>>> {
+    let p = page.normalized();
+    let (items, total) = ListLicenseTypesUseCase { state: &state }
+        .execute(q.region.as_deref(), p.limit(), p.offset()).await?;
+    let resp: Vec<LicenseTypeResponse> = items.into_iter()
+        .map(|entry| LicenseTypeResponse { entry })
+        .collect();
+    Ok(Json(Page::new(resp, total, &p)))
+}
+
+async fn get_type(
+    State(state): State<AppState>,
+    Extension(_auth): Extension<AuthUser>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<LicenseTypeResponse>> {
+    let t = GetLicenseTypeUseCase { state: &state }.execute(id).await?;
+    Ok(Json(LicenseTypeResponse { entry: t }))
+}
+
+// ---- admin ---- //
+
+async fn create_type(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
-    Path(license_id): Path<Uuid>,
-    Json(req): Json<LinkGunRequest>,
+    Json(req): Json<CreateLicenseTypeRequest>,
+) -> ApiResult<(StatusCode, Json<LicenseTypeResponse>)> {
+    let t = CreateLicenseTypeUseCase { state: &state }
+        .execute(auth.0.id(), CreateLicenseTypeInput {
+            code: req.code, name: req.name, region: req.region,
+            validity_days: req.validity_days,
+            instructions: req.instructions,
+        }).await?;
+    Ok((StatusCode::CREATED, Json(LicenseTypeResponse { entry: t })))
+}
+
+async fn update_type(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateLicenseTypeRequest>,
+) -> ApiResult<Json<LicenseTypeResponse>> {
+    let t = UpdateLicenseTypeUseCase { state: &state }
+        .execute(auth.0.id(), id, UpdateLicenseTypeInput {
+            code: req.code, name: req.name, region: req.region,
+            validity_days: req.validity_days,
+            instructions: req.instructions,
+        }).await?;
+    Ok(Json(LicenseTypeResponse { entry: t }))
+}
+
+async fn delete_type(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    // Resolve the license first, so we 404 on unknown / non-owned ids
-    // before touching the link table.
-    GetLicenseUseCase::new(&state)
-        .execute(license_id, auth.0.id())
-        .await?;
-    state
-        .license_repo
-        .link_gun(license_id, req.gun_id)
-        .await?;
+    DeleteLicenseTypeUseCase { state: &state }.execute(auth.0.id(), id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

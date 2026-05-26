@@ -1,10 +1,14 @@
+//! User aggregate root — pure domain. No DB, no axum.
+
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::errors::{DomainError, ValidationError};
 
+
 // Value objects
+
 /// Two-letter region code per ISO 3166-1 alpha-2 (RU, US, ...). Stored
 /// uppercase. We rely on this for jurisdiction-specific behaviour
 /// (renewal rules, ammo limits, legal documents).
@@ -85,8 +89,8 @@ impl std::str::FromStr for UserStatus {
     }
 }
 
+//    Entity    
 
-// Entity
 /// Domain entity. Construct only through [`User::register`] (for new
 /// users) or [`User::rehydrate`] (when loading from the repository).
 /// The fields are private so invariants can't be broken by callers.
@@ -101,6 +105,7 @@ pub struct User {
     region: Region,
     language: Language,
     status: UserStatus,
+    is_admin: bool,
     last_visit_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -133,6 +138,7 @@ impl User {
             region,
             language,
             status: UserStatus::Pending,
+            is_admin: false,
             last_visit_at: None,
             created_at: now,
             updated_at: now,
@@ -160,6 +166,7 @@ impl User {
         region: Region,
         language: Language,
         status: UserStatus,
+        is_admin: bool,
         last_visit_at: Option<DateTime<Utc>>,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
@@ -174,13 +181,14 @@ impl User {
             region,
             language,
             status,
+            is_admin,
             last_visit_at,
             created_at,
             updated_at,
         }
     }
 
-    // field accessors
+    // -------------------- field accessors --------------------- //
 
     pub fn id(&self) -> Uuid { self.id }
     pub fn login(&self) -> &str { &self.login }
@@ -191,17 +199,23 @@ impl User {
     pub fn region(&self) -> &Region { &self.region }
     pub fn language(&self) -> Language { self.language }
     pub fn status(&self) -> UserStatus { self.status }
+    pub fn is_admin(&self) -> bool { self.is_admin }
     pub fn last_visit_at(&self) -> Option<DateTime<Utc>> { self.last_visit_at }
     pub fn created_at(&self) -> DateTime<Utc> { self.created_at }
     pub fn updated_at(&self) -> DateTime<Utc> { self.updated_at }
 
-    // domain operations
+    // -------------------- domain operations -------------------- //
 
     /// Returns the user's age in **completed years**.
+    ///
+    /// (The previous implementation had an off-by-one bug: it
+    /// *subtracted* a year when the current date was past the birthday
+    /// instead of *before* it.)
     pub fn age(&self) -> i32 {
         let today = Utc::now().date_naive();
         let mut age = today.year() - self.date_of_birth.year();
 
+        // If today is BEFORE this year's birthday, subtract one.
         if (today.month(), today.day())
             < (self.date_of_birth.month(), self.date_of_birth.day())
         {
@@ -222,7 +236,7 @@ impl User {
         matches!(self.status, UserStatus::Blocked)
     }
 
-    /// State transition: Pending → Verified.
+    /// State transition: Pending - Verified.
     pub fn mark_verified(&mut self) -> Result<(), DomainError> {
         match self.status {
             UserStatus::Pending => {
@@ -249,7 +263,10 @@ impl User {
     }
 }
 
-// Tests
+
+//     Tests    
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

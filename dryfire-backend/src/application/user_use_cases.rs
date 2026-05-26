@@ -119,7 +119,7 @@ impl<'a> VerifyEmailUseCase<'a> {
             .await?;
 
         // Two-step verification: the SQL `mark_verified` only flips
-        // pending→verified; if the user was blocked or already
+        // pending-verified; if the user was blocked or already
         // verified we re-classify.
         match self.state.user_repo.mark_verified(user_id).await {
             Ok(()) => Ok(user_id),
