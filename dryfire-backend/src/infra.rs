@@ -2,12 +2,8 @@ use crate::{
     application::app_state::AppState,
     controller::http::AxumServer,
     infra::{
-        config::init_config,
-        db::pool::init_pool,
-        hash::aes_gcm_cipher::AesGcmCipher,
-        hash::argon::ArgonHasher,
-        hash::hmac_signer::HmacSigner,
-        mail::logging::LoggingMailer,
+        config::init_config, db::pool::init_pool, hash::aes_gcm_cipher::AesGcmCipher,
+        hash::argon::ArgonHasher, hash::hmac_signer::HmacSigner, mail::logging::LoggingMailer,
         server::Server,
     },
     utils::tokengenerator::TokenGenerator,
@@ -32,68 +28,55 @@ pub async fn init_app() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     // wire up primitives (domain trait - infra impl)
-    let hasher = Arc::new(ArgonHasher) as Arc<dyn crate::domain::services::crypto::Hasher>;
-    let signer = Arc::new(HmacSigner::new(config.token_secret.as_bytes()))
-        as Arc<dyn crate::domain::services::crypto::Signer>;
-    let token_handler = Arc::new(TokenGenerator::new(signer.clone()))
-        as Arc<dyn crate::domain::services::identity::TokenHandler>;
+    let hasher = Arc::new(ArgonHasher);
+    let signer = Arc::new(HmacSigner::new(config.token_secret.as_bytes()));
+    let token_handler = Arc::new(TokenGenerator::new(signer.clone()));
 
     // 32-byte field encryption key. We accept a hex-encoded value in
     // the env so it's easy to paste from `openssl rand -hex 32`.
     let field_key = hex::decode(&config.field_encryption_key_hex)
         .map_err(|e| anyhow::anyhow!("FIELD_ENCRYPTION_KEY_HEX is not valid hex: {e}"))?;
-    let cipher = Arc::new(AesGcmCipher::from_key_bytes(&field_key)?)
-        as Arc<dyn crate::domain::services::cipher::FieldCipher>;
+    let cipher = Arc::new(AesGcmCipher::from_key_bytes(&field_key)?);
 
     let mailer = Arc::new(LoggingMailer) as Arc<dyn crate::domain::services::mail::Mailer>;
-    let audit = Arc::new(crate::infra::db::audit_log::PgAuditLogger::new(pool.clone()))
-        as Arc<dyn crate::domain::services::audit::AuditLogger>;
+    let audit = Arc::new(crate::infra::db::audit_log::PgAuditLogger::new(
+        pool.clone(),
+    ));
 
     // wire up repositories
     let user_repo = Arc::new(crate::infra::db::user_repo::PgUserRepository::new(
         pool.clone(),
-    ))
-        as Arc<dyn crate::domain::repositories::user::UserRepository>;
-    let session_repo = Arc::new(
-        crate::infra::db::session_repo::PgSessionRepository::new(pool.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::user::SessionRepository>;
-    let verification_repo = Arc::new(
-        crate::infra::db::verification_repo::PgVerificationRepository::new(pool.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::user::VerificationRepository>;
+    ));
+    let session_repo = Arc::new(crate::infra::db::session_repo::PgSessionRepository::new(
+        pool.clone(),
+    ));
+    let verification_repo =
+        Arc::new(crate::infra::db::verification_repo::PgVerificationRepository::new(pool.clone()));
     let ballistic_profile_repo = Arc::new(
         crate::infra::db::ballistic_profile_repo::PgBallisticProfileRepository::new(pool.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::ballistics::BallisticProfileRepository>;
-    let scope_profile_repo = Arc::new(
-        crate::infra::db::scope_profile_repo::PgScopeProfileRepository::new(pool.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::scope::ScopeProfileRepository>;
-    let gun_repo = Arc::new(
-        crate::infra::db::gun_repo::PgGunRepository::new(pool.clone(), cipher.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::armory::GunRepository>;
-    let gun_catalog_repo = Arc::new(
-        crate::infra::db::gun_catalog_repo::PgGunCatalogRepository::new(pool.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::armory::GunCatalogRepository>;
-    let license_repo = Arc::new(
-        crate::infra::db::license_repo::PgLicenseRepository::new(pool.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::license::LicenseRepository>;
+    );
+    let scope_profile_repo =
+        Arc::new(crate::infra::db::scope_profile_repo::PgScopeProfileRepository::new(pool.clone()));
+    let gun_repo = Arc::new(crate::infra::db::gun_repo::PgGunRepository::new(
+        pool.clone(),
+        cipher.clone(),
+    ));
+    let gun_catalog_repo =
+        Arc::new(crate::infra::db::gun_catalog_repo::PgGunCatalogRepository::new(pool.clone()));
+    let license_repo = Arc::new(crate::infra::db::license_repo::PgLicenseRepository::new(
+        pool.clone(),
+    ));
     let license_notification_repo = Arc::new(
-        crate::infra::db::license_notification_repo::PgLicenseNotificationRepository::new(pool.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::license::LicenseNotificationRepository>;
-    let ammo_repo = Arc::new(
-        crate::infra::db::ammo_repo::PgAmmoRepository::new(pool.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::ammo::AmmoRepository>;
-    let law_repo = Arc::new(
-        crate::infra::db::law_repo::PgLawRepository::new(pool.clone()),
-    )
-        as Arc<dyn crate::domain::repositories::law::LawRepository>;
+        crate::infra::db::license_notification_repo::PgLicenseNotificationRepository::new(
+            pool.clone(),
+        ),
+    );
+    let ammo_repo = Arc::new(crate::infra::db::ammo_repo::PgAmmoRepository::new(
+        pool.clone(),
+    ));
+    let law_repo = Arc::new(crate::infra::db::law_repo::PgLawRepository::new(
+        pool.clone(),
+    ));
 
     let state = AppState {
         pool,
