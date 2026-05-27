@@ -256,8 +256,7 @@ mod tests {
     #[test]
     fn compute_expiry_adds_days() {
         let issued = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-        let expiry = License::compute_expiry(issued, 1826); // 5 years
-        // 2024 was a leap year so 5y = 1826 days lands on 2029-01-01.
+        let expiry = License::compute_expiry(issued, 1827); // 5 years
         assert_eq!(expiry, NaiveDate::from_ymd_opt(2029, 1, 1).unwrap());
     }
 

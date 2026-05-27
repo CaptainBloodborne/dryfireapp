@@ -6,10 +6,8 @@
 //! - **G1 drag function** (standard small-arms shape factor). The
 //!   `BC` (ballistic coefficient) input is the G1 BC.
 //! - **Atmospheric correction**: standard-atmosphere baseline at 15°C,
-//!   1013.25 hPa, 0% humidity. The effective BC scales linearly with
-//!   air-density ratio (this is the Mayewski/Sierra simplification —
-//!   accurate to a fraction of a click at ranges < 800 m, which covers
-//!   all civilian use).
+//!   1013.25 hPa, 0% humidity. Air density goes into the ODE directly,
+//!   so any density change automatically affects drag.
 //! - **Wind**: constant magnitude + direction over the trajectory.
 //!   Direction follows the clock convention: 12 o'clock is downrange,
 //!   3 o'clock is from the right.
@@ -25,23 +23,48 @@
 //! - weight (bullet): kg
 //! - energy: J
 //! - drop/drift: m (converted to cm and MOA/MIL in the response layer)
+//!
+//! ## On the drag formula
+//!
+//! The G1 ballistic coefficient encodes the bullet's drag deceleration
+//! *relative to the standard G1 reference projectile* (a 1-lb, 1-inch
+//! diameter shape). The deceleration of a bullet with BC `b` is:
+//!
+//!     a_drag = (0.5 · ρ · Cd(M) · A_ref / m_ref) / b · v · |v|
+//!
+//! where Cd(M) comes from the G1 drag table. The bullet's own area /
+//! mass do **not** appear here — BC already encodes them, relative to
+//! the reference. This is the source of a common implementation bug
+//! (dividing by both the actual A/m and by BC, applying drag twice).
 
 use serde::{Deserialize, Serialize};
 
-// physical constants
+// ---- physical constants ----------------------------------------- //
 
-const G: f64 = 9.80665;        // gravity, m/s²
-const RHO_0: f64 = 1.225;      // standard air density at 15 °C, 1013.25 hPa, kg/m³
+/// Gravitational acceleration, m/s².
+const G: f64 = 9.80665;
 
-// inputs
+/// G1 reference projectile: 1 lb mass.
+const G1_REF_MASS_KG: f64 = 0.45359237;
+
+/// G1 reference projectile: 1 inch diameter cross-section area, m².
+const G1_REF_AREA_M2: f64 = std::f64::consts::PI * (0.0254 / 2.0) * (0.0254 / 2.0);
+
+/// Pre-computed reference A/m factor used in the drag equation.
+/// Roughly 1.118 × 10⁻³ m²/kg.
+const G1_REF_FACTOR: f64 = G1_REF_AREA_M2 / G1_REF_MASS_KG;
+
+// ---- inputs ----------------------------------------------------- //
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bullet {
-    /// Diameter in millimetres
+    /// Diameter in millimetres. Informational — not used by the G1
+    /// drag computation (BC absorbs it) but stored on profiles for
+    /// display and future G7 / multi-BC support.
     pub caliber_mm: f64,
-    /// Bullet mass in **grains** (1 grain = 64.79891 mg). We accept
-    /// grains since every cartridge spec ships them; converted to
-    /// kilograms internally.
+    /// Bullet mass in **grains** (1 grain = 64.79891 mg). Accepted in
+    /// grains because every cartridge spec ships them; converted to
+    /// kilograms internally and used only for energy calculation.
     pub weight_grain: f64,
     /// Muzzle velocity in m/s.
     pub muzzle_velocity_mps: f64,
@@ -94,9 +117,7 @@ impl Atmosphere {
         let pressure_pa = match (self.pressure_hpa, self.altitude_m) {
             (Some(p), _) => p * 100.0,
             (None, Some(h)) => {
-                // ISA below 11 km: P = P0 * (1 - L·h / T0)^(g·M / R·L)
-                // Simplified to a 4th-order polynomial fit (accurate
-                // to ±0.5% to 5000 m, which is well past civilian range).
+                // ISA below 11 km: P = P0 · (1 - L·h / T0)^(g·M / R·L)
                 let p0 = 101325.0;
                 p0 * (1.0 - 0.0000225577 * h).powf(5.2559)
             }
@@ -147,7 +168,7 @@ pub struct TrajectoryRequest {
     pub steps_m: Vec<f64>,
 }
 
-// output
+// ---- output ----------------------------------------------------- //
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TrajectoryPoint {
@@ -170,9 +191,10 @@ pub struct Trajectory {
     pub points: Vec<TrajectoryPoint>,
 }
 
-// solver
+// ---- solver ----------------------------------------------------- //
 
-/// G1 drag curve — interpolation table of (Mach, Cd)
+/// G1 drag curve — interpolation table of (Mach, Cd).
+/// Standard published values; truncated to the speeds we care about.
 const G1: &[(f64, f64)] = &[
     (0.00, 0.2629), (0.50, 0.2492), (0.70, 0.2462),
     (0.85, 0.2547), (0.90, 0.2728), (0.95, 0.3357),
@@ -202,50 +224,40 @@ fn speed_of_sound(temp_c: f64) -> f64 {
 /// (skipping any beyond the trajectory's reach, e.g. if velocity dies
 /// before then).
 pub fn solve(req: &TrajectoryRequest) -> Trajectory {
-    // unit conversions
+    // ---- unit conversions ---------------------------------------- //
+    // Bullet mass is used for energy only; the drag computation uses
+    // the G1 reference projectile's A/m, scaled by 1/BC.
     let mass_kg = req.bullet.weight_grain * 6.479_891e-5;
     let v0 = req.bullet.muzzle_velocity_mps;
     let bc = req.bullet.bc_g1.max(0.01);
 
     let rho = req.atmosphere.density();
-    let rho_ratio = rho / RHO_0;
     let sound = speed_of_sound(req.atmosphere.temperature_c);
 
     let (wind_dr, wind_cr) = req.wind.components();
 
-    // state
-    // Position: x = downrange (m), y = vertical (m), z = lateral (m).
-    // Velocity components in same frame.
-    let mut x = 0.0_f64;
-    let mut y = 0.0_f64;
-    let mut z = 0.0_f64;
-    let mut vx = v0;
-    let mut vy = 0.0_f64; // adjusted by zero correction below
-    let mut vz = 0.0_f64;
-    let mut t = 0.0_f64;
-
-    // determine launch angle so we cross LOS at zero distance
+    // ---- determine launch angle so we cross LOS at zero distance --- //
     // The optic sits sight.height_mm above the bore. The bullet starts
     // at y = -sight_height, flies a parabola, and must reach y = 0 at
-    // x = zero_distance
+    // x = zero_distance.
     let sight_height = req.sight.height_mm * 1e-3;
-    y = -sight_height;
-    vy = find_launch_angle(
+    let launch_angle = find_launch_angle(
         v0, sight_height, req.sight.zero_distance_m,
-        bc, rho_ratio, mass_kg, sound, req.bullet.caliber_mm,
+        bc, rho, sound,
     );
 
-    // precompute drag scale
-    // Drag form: a_drag = (rho / (2·m)) · Cd(M) · A · |v_rel| · v_rel
-    // We fold (A / m) and the BC's reference value into a single
-    // factor; the BC effectively scales drag inversely.
-    // a = - (Cd(M) · rho · v_rel · |v_rel|) / (2 · sectional_density_ref · BC)
-    // where sectional_density_ref captures the G1 standard.
-    //
-    // For a clean implementation we use the standard form:
-    //   a = - 0.5 · rho · Cd · A · |v_rel| · v_rel / m
-    // and approximate A from caliber.
-    let area = std::f64::consts::PI * (req.bullet.caliber_mm * 1e-3 / 2.0).powi(2);
+    // ---- state --------------------------------------------------- //
+    // Position: x = downrange (m), y = vertical (m), z = lateral (m).
+    // Velocity is decomposed from v0 so that √(vx² + vy²) = v0 at
+    // the muzzle (preserves total speed, unlike taking vx = v0 and
+    // adding a small vy component).
+    let mut x = 0.0_f64;
+    let mut y = -sight_height;
+    let mut z = 0.0_f64;
+    let mut vx = v0 * launch_angle.cos();
+    let mut vy = v0 * launch_angle.sin();
+    let mut vz = 0.0_f64;
+    let mut t = 0.0_f64;
 
     // ---- record breakpoints ------------------------------------- //
     let mut traj_raw: Vec<TrajectoryStep> = Vec::with_capacity(8000);
@@ -258,18 +270,18 @@ pub fn solve(req: &TrajectoryRequest) -> Trajectory {
 
     while x < safety_max_x && t < safety_max_t {
         // RK4
-        let k1 = derivs(vx, vy, vz, area, mass_kg, bc, rho, sound, wind_dr, wind_cr);
+        let k1 = derivs(vx, vy, vz, bc, rho, sound, wind_dr, wind_cr);
         let k2 = derivs(
             vx + 0.5 * dt * k1.ax, vy + 0.5 * dt * k1.ay, vz + 0.5 * dt * k1.az,
-            area, mass_kg, bc, rho, sound, wind_dr, wind_cr,
+            bc, rho, sound, wind_dr, wind_cr,
         );
         let k3 = derivs(
             vx + 0.5 * dt * k2.ax, vy + 0.5 * dt * k2.ay, vz + 0.5 * dt * k2.az,
-            area, mass_kg, bc, rho, sound, wind_dr, wind_cr,
+            bc, rho, sound, wind_dr, wind_cr,
         );
         let k4 = derivs(
             vx + dt * k3.ax, vy + dt * k3.ay, vz + dt * k3.az,
-            area, mass_kg, bc, rho, sound, wind_dr, wind_cr,
+            bc, rho, sound, wind_dr, wind_cr,
         );
 
         let ax = (k1.ax + 2.0 * k2.ax + 2.0 * k3.ax + k4.ax) / 6.0;
@@ -308,10 +320,15 @@ struct TrajectoryStep {
 
 struct Accel { ax: f64, ay: f64, az: f64 }
 
-#[allow(clippy::too_many_arguments)]
+/// Acceleration on the bullet from drag + gravity + wind.
+///
+/// Standard G1 form: drag deceleration is the G1-reference projectile's
+/// drag (Cd · ρ · A_ref / m_ref) divided by BC. The actual bullet's
+/// caliber and mass do not enter the drag equation — they're encoded
+/// inside the BC.
 fn derivs(
     vx: f64, vy: f64, vz: f64,
-    area: f64, mass: f64, bc: f64, rho: f64, sound: f64,
+    bc: f64, rho: f64, sound: f64,
     wind_dr: f64, wind_cr: f64,
 ) -> Accel {
     // Velocity relative to air.
@@ -322,8 +339,7 @@ fn derivs(
     let mach = vrel / sound;
     let cd = g1_cd(mach);
 
-    // Effective drag is Cd / BC (standard rule of thumb).
-    let drag_factor = 0.5 * rho * cd * area / (mass * bc);
+    let drag_factor = 0.5 * rho * cd * G1_REF_FACTOR / bc;
     Accel {
         ax: -drag_factor * vrel * vrx,
         ay: -drag_factor * vrel * vry - G,
@@ -345,20 +361,18 @@ fn interpolate_at(traj: &[TrajectoryStep], d: f64, mass: f64) -> Option<Trajecto
     let v = a.v + f * (b.v - a.v);
     let t = a.t + f * (b.t - a.t);
 
-    // y is height of bullet relative to bore-axis-at-muzzle. The line
-    // of sight starts at +sight_height and points at the zero distance.
-    // The drop reported to the user is the *deviation from line of
-    // sight*, which equals -y when the LOS is at y=0 (i.e., we already
-    // accounted for sight height by starting the bullet at -h).
+    // y is the bullet's height relative to bore axis at the muzzle.
+    // We accounted for sight height by starting the bullet at y = -h,
+    // so a positive drop_m means the bullet is below the line of sight.
     let drop_m = -y;
     let drift_m = z;
 
     let drop_cm = drop_m * 100.0;
     let drift_cm = drift_m * 100.0;
 
-    // 1 MOA at distance d (m) covers d * tan(1/60°) m ≈ d * 2.908882e-4 m.
+    // 1 MOA at distance d (m) covers d · tan(1/60°) m ≈ d · 2.908882e-4 m.
     let one_moa_m = d * (1.0_f64 / 60.0).to_radians().tan();
-    // 1 mil = 0.001 rad - d / 1000 metres.
+    // 1 mil = 0.001 rad → d / 1000 metres.
     let one_mil_m = d * 1e-3;
 
     let elevation_moa = drop_m / one_moa_m;
@@ -380,35 +394,30 @@ fn interpolate_at(traj: &[TrajectoryStep], d: f64, mass: f64) -> Option<Trajecto
     })
 }
 
-/// Iterate to find the launch angle (specifically, the initial vy) so
-/// that the bullet crosses the line of sight at the zero distance.
-/// Newton-style 1-D search: try angles, measure error, halve.
-#[allow(clippy::too_many_arguments)]
+/// Find the launch angle (in radians) so the bullet crosses the line
+/// of sight at the zero distance. Bisection search; converges to
+/// micro-radian precision in 40 iterations.
 fn find_launch_angle(
     v0: f64, sight_height: f64, zero_d: f64,
-    bc: f64, rho_ratio: f64, mass_kg: f64, sound: f64, caliber_mm: f64,
+    bc: f64, rho: f64, sound: f64,
 ) -> f64 {
-    // Bracket search. Start angle = 0, climb until we hit LOS at d.
     let mut low: f64 = 0.0;
     let mut high: f64 = 0.05; // ~3°, enough for any civilian shot
-    let area = std::f64::consts::PI * (caliber_mm * 1e-3 / 2.0).powi(2);
-    let rho = rho_ratio * RHO_0;
 
     for _ in 0..40 {
         let mid = 0.5 * (low + high);
-        let vy0 = v0 * mid.sin();
         let vx0 = v0 * mid.cos();
-        let drop = simulate_drop_at(vx0, vy0, sight_height, zero_d, area, mass_kg, bc, rho, sound);
-        // drop > 0 means bullet was above LOS at d - angle too high
+        let vy0 = v0 * mid.sin();
+        let drop = simulate_drop_at(vx0, vy0, sight_height, zero_d, bc, rho, sound);
+        // drop > 0 means bullet was above LOS at d → angle too high
         if drop > 0.0 { high = mid; } else { low = mid; }
     }
-    v0 * (0.5 * (low + high)).sin()
+    0.5 * (low + high)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn simulate_drop_at(
     vx0: f64, vy0: f64, sight_height: f64, target_x: f64,
-    area: f64, mass: f64, bc: f64, rho: f64, sound: f64,
+    bc: f64, rho: f64, sound: f64,
 ) -> f64 {
     let mut x = 0.0_f64;
     let mut y = -sight_height;
@@ -417,7 +426,7 @@ fn simulate_drop_at(
     let dt = 0.002;
     let mut t = 0.0_f64;
     while x < target_x && t < 5.0 {
-        let a = derivs(vx, vy, 0.0, area, mass, bc, rho, sound, 0.0, 0.0);
+        let a = derivs(vx, vy, 0.0, bc, rho, sound, 0.0, 0.0);
         x += (vx + 0.5 * a.ax * dt) * dt;
         y += (vy + 0.5 * a.ay * dt) * dt;
         vx += a.ax * dt;
@@ -427,7 +436,7 @@ fn simulate_drop_at(
     y
 }
 
-// CSV serialiser
+// ---- CSV serialiser --------------------------------------------- //
 
 pub fn trajectory_to_csv(traj: &Trajectory) -> String {
     let mut out = String::with_capacity(traj.points.len() * 80);
@@ -445,7 +454,7 @@ pub fn trajectory_to_csv(traj: &Trajectory) -> String {
     out
 }
 
-// tests
+// ---- tests ------------------------------------------------------ //
 
 #[cfg(test)]
 mod tests {
@@ -503,7 +512,7 @@ mod tests {
         let drop_cold = solve(&cold).points.iter()
             .find(|p| (p.distance_m - 500.0).abs() < 0.1).unwrap().drop_cm;
 
-        // Colder air - denser - more drag - more drop. Even small.
+        // Colder air → denser → more drag → more drop.
         assert!(drop_cold > drop_hot, "cold drop {} should exceed hot drop {}",
                 drop_cold, drop_hot);
     }
@@ -515,7 +524,7 @@ mod tests {
         let t = solve(&windy);
         let p500 = t.points.iter()
             .find(|p| (p.distance_m - 500.0).abs() < 0.1).unwrap();
-        // Wind from 3 o'clock pushes left - drift should be negative.
+        // Wind from 3 o'clock pushes left → drift should be negative.
         // (z increases to shooter's left because wind cross component
         // pushes from right.) Sign convention here just needs to be
         // consistent.
