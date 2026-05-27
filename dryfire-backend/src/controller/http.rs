@@ -90,6 +90,7 @@ pub fn build_router(state: AppState) -> Router {
         .nest("/ammo", ammo::router::routes(state.clone()))
         .nest("/armory", armory::router::routes(state.clone()))
         .nest("/ballistics", ballistics::router::routes(state.clone()))
+        .nest("/laws", law::router::routes(state.clone()))
         .nest("/licenses", license::router::routes(state.clone()))
         .nest("/scope", scope::router::routes(state.clone()));
 

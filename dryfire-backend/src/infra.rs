@@ -31,7 +31,7 @@ pub async fn init_app() -> anyhow::Result<()> {
     tracing::info!("DB pool ready, running migrations");
     sqlx::migrate!("./migrations").run(&pool).await?;
 
-    // ---- wire up primitives (domain trait - infra impl) ---- //
+    // wire up primitives (domain trait - infra impl)
     let hasher = Arc::new(ArgonHasher) as Arc<dyn crate::domain::services::crypto::Hasher>;
     let signer = Arc::new(HmacSigner::new(config.token_secret.as_bytes()))
         as Arc<dyn crate::domain::services::crypto::Signer>;
@@ -49,7 +49,7 @@ pub async fn init_app() -> anyhow::Result<()> {
     let audit = Arc::new(crate::infra::db::audit_log::PgAuditLogger::new(pool.clone()))
         as Arc<dyn crate::domain::services::audit::AuditLogger>;
 
-    // ---- wire up repositories ---- //
+    // wire up repositories
     let user_repo = Arc::new(crate::infra::db::user_repo::PgUserRepository::new(
         pool.clone(),
     ))
